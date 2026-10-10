@@ -11,6 +11,8 @@ import type { SceneSpec, SubtitleStyle, TimelineScene } from '../../shared/rende
 import { RenderCancelled, EngineError, type RenderCallbacks, type RenderRequest, type RenderResult } from './types';
 
 const DUCK_LEVEL = 0.22;
+const FADE_MS = 500;      // thời gian chuyển cảnh mờ dần (ms)
+const SUB_ANIM_SEC = 0.35; // thời gian phụ đề hiện dần (giây)
 
 function wrapLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, maxLines = 3): string[] {
   const words = text.split(/\s+/).filter(Boolean);
@@ -40,8 +42,12 @@ function drawSubtitle(
   style: SubtitleStyle,
   W: number,
   H: number,
+  anim = 1,
 ) {
   const fontSize = Math.round(Math.min(W, H) * 0.052);
+  ctx.save();
+  ctx.globalAlpha = anim;
+  ctx.translate(0, (1 - anim) * fontSize * 0.8); // trượt nhẹ từ dưới lên
   ctx.font = `bold ${fontSize}px "Be Vietnam Pro", "Outfit", "Inter", Arial, sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -71,6 +77,7 @@ function drawSubtitle(
       ctx.fillText(line, W / 2, y);
     }
   });
+  ctx.restore();
 }
 
 function drawVideoFrame(
@@ -80,19 +87,20 @@ function drawVideoFrame(
   W: number,
   H: number,
   zoom = 1,
+  panX = 0,
 ) {
   ctx.fillStyle = '#000000';
   ctx.fillRect(0, 0, W, H);
   const vW = (video instanceof HTMLVideoElement ? video.videoWidth : video.naturalWidth) || W;
   const vH = (video instanceof HTMLVideoElement ? video.videoHeight : video.naturalHeight) || H;
-  if (zoom !== 1) {
+  if (zoom !== 1 || panX !== 0) {
     ctx.save();
-    ctx.translate(W / 2, H / 2);
+    ctx.translate(W / 2 + panX, H / 2);
     ctx.scale(zoom, zoom);
     ctx.translate(-W / 2, -H / 2);
   }
   drawFitted(ctx, video, vW, vH, fit, W, H);
-  if (zoom !== 1) ctx.restore();
+  if (zoom !== 1 || panX !== 0) ctx.restore();
 }
 
 function drawFitted(
@@ -171,6 +179,11 @@ export async function renderInBrowser(req: RenderRequest, cb: RenderCallbacks): 
   canvas.width = W;
   canvas.height = H;
   const ctx = canvas.getContext('2d', { alpha: false });
+  // Ảnh chụp khung hình cuối của cảnh trước, dùng để chuyển cảnh mờ dần
+  const snap = document.createElement('canvas');
+  snap.width = W;
+  snap.height = H;
+  let hasSnap = false;
   if (!ctx) throw new EngineError('Trình duyệt không hỗ trợ vẽ video (Canvas 2D).');
 
   if (typeof MediaRecorder === 'undefined') {
@@ -265,7 +278,8 @@ export async function renderInBrowser(req: RenderRequest, cb: RenderCallbacks): 
       await runScene(ctx, videoEl, voiceEl, scene, {
         fit: settings.fitMode,
         subtitleStyle: settings.subtitleStyle,
-        zoomIn: scene.index % 2 === 0,
+        motion: scene.index % 4,
+        prev: hasSnap ? snap : null,
         W, H,
         signal: cb.signal,
         duck: (on: boolean) => {
@@ -274,6 +288,8 @@ export async function renderInBrowser(req: RenderRequest, cb: RenderCallbacks): 
           bgmGain.gain.setTargetAtTime(target, audioCtx.currentTime, on ? 0.12 : 0.3);
         },
       });
+
+      try { snap.getContext('2d')?.drawImage(canvas, 0, 0); hasSnap = true; } catch { /* bỏ qua */ }
 
       if (videoEl instanceof HTMLVideoElement) {
         videoEl.pause();
@@ -325,7 +341,9 @@ export async function renderInBrowser(req: RenderRequest, cb: RenderCallbacks): 
 interface SceneRunOptions {
   fit: 'blur' | 'cover' | 'contain';
   subtitleStyle: SubtitleStyle;
-  zoomIn: boolean;
+  /** 0: zoom vào, 1: zoom ra, 2: zoom vào + lướt trái, 3: zoom vào + lướt phải */
+  motion: number;
+  prev: HTMLCanvasElement | null;
   W: number;
   H: number;
   signal: AbortSignal;
@@ -372,18 +390,37 @@ function runScene(
         o.duck(false);
       }
       let zoom = 1;
+      let panX = 0;
       if (video instanceof HTMLVideoElement) {
         if (video.paused) void video.play().catch(() => {});
       } else {
-        const p = Math.min(1, elapsedMs / sceneMs);
-        zoom = o.zoomIn ? 1 + 0.12 * p : 1.12 - 0.12 * p; // zoom nhẹ giống máy dựng FFmpeg
+        const t = Math.min(1, elapsedMs / sceneMs);
+        const p = t * t * (3 - 2 * t); // chuyển động êm ở đầu và cuối cảnh
+        const Z = 0.16;
+        if (o.motion === 1) zoom = 1 + Z - Z * p;
+        else if (o.motion === 2) { zoom = 1.1 + 0.06 * p; panX = o.W * 0.04 * (0.5 - p); }
+        else if (o.motion === 3) { zoom = 1.1 + 0.06 * p; panX = o.W * 0.04 * (p - 0.5); }
+        else zoom = 1 + Z * p;
       }
 
-      drawVideoFrame(ctx, video, o.fit, o.W, o.H, zoom);
+      // Chuyển cảnh mờ dần từ cảnh trước
+      const fadeP = o.prev ? Math.min(1, elapsedMs / FADE_MS) : 1;
+      if (o.prev && fadeP < 1) {
+        ctx.globalAlpha = 1;
+        ctx.drawImage(o.prev, 0, 0);
+        ctx.globalAlpha = fadeP;
+        drawVideoFrame(ctx, video, o.fit, o.W, o.H, zoom, panX);
+        ctx.globalAlpha = 1;
+      } else {
+        drawVideoFrame(ctx, video, o.fit, o.W, o.H, zoom, panX);
+      }
 
       const elapsed = elapsedMs / 1000;
       const cue = scene.cues.find(c => elapsed >= c.start && elapsed < c.end);
-      if (cue) drawSubtitle(ctx, cue.text, o.subtitleStyle, o.W, o.H);
+      if (cue) {
+        const a = Math.min(1, (elapsed - cue.start) / SUB_ANIM_SEC);
+        drawSubtitle(ctx, cue.text, o.subtitleStyle, o.W, o.H, 1 - (1 - a) * (1 - a));
+      }
     }, 1000 / 30);
   });
 }
