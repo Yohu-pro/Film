@@ -1,49 +1,68 @@
-{
-  "name": "veo3-yohu-pro---2.1.25",
-  "private": true,
-  "version": "0.0.0",
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
-    "lint": "eslint . --report-unused-disable-directives --max-warnings 0",
-    "test": "tsx --test shared/render/plan.test.ts src/ingest/ingest.test.ts",
-    "engine": "cd render-server && npm start",
-    "test:engine": "cd render-server && npm test"
-  },
-  "dependencies": {
-    "@eslint/js": "^9.39.3",
-    "@ffmpeg/ffmpeg": "^0.12.15",
-    "@ffmpeg/util": "^0.12.2",
-    "@google/genai": "^1.46.0",
-    "@supabase/supabase-js": "^2.39.0",
-    "@tailwindcss/vite": "^4.3.0",
-    "@types/file-saver": "^2.0.7",
-    "@zip.js/zip.js": "^2.23.0",
-    "clsx": "^2.1.1",
-    "file-saver": "^2.0.5",
-    "globals": "^17.3.0",
-    "jszip": "^3.10.1",
-    "lucide-react": "^0.575.0",
-    "motion": "^12.34.3",
-    "pdfjs-dist": "^6.4.299",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "tailwind-merge": "^3.5.0",
-    "tailwindcss": "^4.3.0",
-    "typescript-eslint": "^8.56.1"
-  },
-  "devDependencies": {
-    "@types/node": "^22.14.0",
-    "@typescript-eslint/eslint-plugin": "^8.56.1",
-    "@typescript-eslint/parser": "^8.56.1",
-    "@vitejs/plugin-react": "^5.0.0",
-    "eslint": "^9.39.3",
-    "eslint-plugin-react-hooks": "^7.0.1",
-    "eslint-plugin-react-refresh": "^0.5.2",
-    "tsx": "^4.19.2",
-    "typescript": "~5.8.2",
-    "vite": "^6.2.0"
-  }
+import type { RenderSettings, MotionStyle } from '../../shared/render/types';
+
+export type { RenderSettings, MotionStyle };
+
+/** Một cảnh như giao diện đang giữ (clip + voice + chữ phụ đề) */
+export interface EngineScene {
+  id: string;
+  /** 'video' (mặc định) hoặc 'image' (ảnh tĩnh -> chuyển động an toàn cho chữ; khi đó videoUrl = '') */
+  kind?: 'video' | 'image';
+  imageFile?: File;
+  imageUrl?: string;
+  imageDuration?: number;
+  motionStyle?: MotionStyle;
+  videoFile?: File;
+  videoUrl: string;
+  videoName: string;
+  videoDuration: number;
+  videoWidth: number;
+  videoHeight: number;
+  voiceFile?: File;
+  voiceUrl?: string;
+  voiceName?: string;
+  voiceDuration?: number;
+  subtitleText?: string;
+}
+
+export interface RenderRequest {
+  scenes: EngineScene[];
+  settings: RenderSettings;
+  bgm?: { url: string; name: string };
+}
+
+export interface RenderCallbacks {
+  onProgress: (percent: number, message: string) => void;
+  signal: AbortSignal;
+}
+
+export interface RenderResult {
+  engine: 'server' | 'browser';
+  /** Dùng cho <video src> */
+  url: string;
+  /** Dùng cho nút tải về (nhận tên file mong muốn, không gồm đuôi) */
+  downloadUrl: (fileName: string) => string;
+  extension: 'mp4' | 'webm';
+  duration: number;
+  sizeMB: number;
+  width: number;
+  height: number;
+  warnings: string[];
+  /** Giải phóng tài nguyên (xóa file tạm trên máy dựng / thu hồi blob) */
+  dispose: () => void;
+}
+
+export interface EngineHealth {
+  ok: boolean;
+  ffmpeg: string;
+  subtitles: boolean;
+  /** máy dựng có xử lý được cảnh ảnh không */
+  images: boolean;
+  cpus: number;
+  baseUrl: string;
+}
+
+/** Lỗi có nội dung thân thiện, hiển thị thẳng cho người dùng */
+export class EngineError extends Error {}
+export class RenderCancelled extends Error {
+  constructor() { super('Đã hủy dựng phim.'); }
 }
