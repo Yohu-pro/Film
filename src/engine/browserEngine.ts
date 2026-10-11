@@ -8,9 +8,12 @@
  */
 import { buildTimeline } from '../../shared/render/plan';
 import type { SceneSpec, SubtitleStyle, TimelineScene } from '../../shared/render/types';
+import { createTextReveal, type TextReveal } from './textReveal';
 import { RenderCancelled, EngineError, type RenderCallbacks, type RenderRequest, type RenderResult } from './types';
 
 const DUCK_LEVEL = 0.22;
+/** Ảnh slide: tự nhận diện từng khối chữ và cho hiện lần lượt. Đặt false để tắt. */
+const ENABLE_TEXT_REVEAL = true;
 const FADE_MS = 500;      // thời gian chuyển cảnh mờ dần (ms)
 const SUB_ANIM_SEC = 0.35; // thời gian phụ đề hiện dần (giây)
 
@@ -80,9 +83,11 @@ function drawSubtitle(
   ctx.restore();
 }
 
+type Drawable = HTMLVideoElement | HTMLImageElement | HTMLCanvasElement;
+
 function drawVideoFrame(
   ctx: CanvasRenderingContext2D,
-  video: HTMLVideoElement | HTMLImageElement,
+  video: Drawable,
   fit: 'blur' | 'cover' | 'contain',
   W: number,
   H: number,
@@ -91,8 +96,8 @@ function drawVideoFrame(
 ) {
   ctx.fillStyle = '#000000';
   ctx.fillRect(0, 0, W, H);
-  const vW = (video instanceof HTMLVideoElement ? video.videoWidth : video.naturalWidth) || W;
-  const vH = (video instanceof HTMLVideoElement ? video.videoHeight : video.naturalHeight) || H;
+  const vW = (video instanceof HTMLVideoElement ? video.videoWidth : video instanceof HTMLImageElement ? video.naturalWidth : video.width) || W;
+  const vH = (video instanceof HTMLVideoElement ? video.videoHeight : video instanceof HTMLImageElement ? video.naturalHeight : video.height) || H;
   if (zoom !== 1 || panX !== 0) {
     ctx.save();
     ctx.translate(W / 2 + panX, H / 2);
@@ -105,7 +110,7 @@ function drawVideoFrame(
 
 function drawFitted(
   ctx: CanvasRenderingContext2D,
-  video: HTMLVideoElement | HTMLImageElement,
+  video: Drawable,
   vW: number,
   vH: number,
   fit: 'blur' | 'cover' | 'contain',
@@ -275,9 +280,13 @@ export async function renderInBrowser(req: RenderRequest, cb: RenderCallbacks): 
         await videoEl.play().catch(() => { /* sẽ thử lại theo khung hình */ });
       }
 
+      const reveal: TextReveal | null =
+        isImage && ENABLE_TEXT_REVEAL ? createTextReveal(videoEl as HTMLImageElement, scene.duration) : null;
+
       await runScene(ctx, videoEl, voiceEl, scene, {
         fit: settings.fitMode,
         subtitleStyle: settings.subtitleStyle,
+        reveal,
         motion: scene.index % 4,
         prev: hasSnap ? snap : null,
         W, H,
@@ -343,6 +352,7 @@ interface SceneRunOptions {
   subtitleStyle: SubtitleStyle;
   /** 0: zoom vào, 1: zoom ra, 2: zoom vào + lướt trái, 3: zoom vào + lướt phải */
   motion: number;
+  reveal: TextReveal | null;
   prev: HTMLCanvasElement | null;
   W: number;
   H: number;
@@ -403,16 +413,19 @@ function runScene(
         else zoom = 1 + Z * p;
       }
 
+      // Ảnh slide có hiệu ứng hiện lần lượt: dùng khung đã ghép sẵn thay cho ảnh gốc
+      const frameSrc: Drawable = o.reveal ? o.reveal.render(elapsedMs / 1000) : video;
+
       // Chuyển cảnh mờ dần từ cảnh trước
       const fadeP = o.prev ? Math.min(1, elapsedMs / FADE_MS) : 1;
       if (o.prev && fadeP < 1) {
         ctx.globalAlpha = 1;
         ctx.drawImage(o.prev, 0, 0);
         ctx.globalAlpha = fadeP;
-        drawVideoFrame(ctx, video, o.fit, o.W, o.H, zoom, panX);
+        drawVideoFrame(ctx, frameSrc, o.fit, o.W, o.H, zoom, panX);
         ctx.globalAlpha = 1;
       } else {
-        drawVideoFrame(ctx, video, o.fit, o.W, o.H, zoom, panX);
+        drawVideoFrame(ctx, frameSrc, o.fit, o.W, o.H, zoom, panX);
       }
 
       const elapsed = elapsedMs / 1000;
